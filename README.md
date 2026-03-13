@@ -1,16 +1,16 @@
 Disagreement-Aware RAG (Answer/Abstain)
 =======================================
 
-This app is a retrieval-augmented QA system that **predicts disagreement risk** and **abstains** when answers are likely contentious or weakly grounded. This improves reliability at a chosen coverage (questions answered out of total asked) level. This project was created inspired by Kang et al., *Everyone's Voice Matters* (AAAI 2023).
+This app is a retrieval-augmented QA system that **predicts disagreement risk** and **abstains** when answers are likely contentious or weakly grounded. This improves reliability at a chosen coverage (questions answered out of total asked) level. This project was created inspired by the *Everyone's Voice Matters* paper (AAAI 2023).
 
 * * * * *
 
 Why this matters
 ----------------
 
-Large language models can be confident about incorrect facts. Kang et al.' states that **disagreement is signal, not noise**, this project treats "people would disagree here" as a prediction target and enforce an **answer/abstain policy**: answer when risk is low and evidence support is strong; abstain otherwise. This yields a clear **coverage--risk trade-off** that one can tune with larger datasets and for safety critical use cases.
+Large language models can be confident about incorrect facts.The paper states that **disagreement is signal, not noise**, this project treats "people would disagree here" as a prediction target and enforce an **answer/abstain policy**: answer when risk is low and evidence support is strong; abstain otherwise. This yields a clear **coverage--risk trade-off** that one can tune with larger datasets and for safety critical use cases.
 
--   Kang, Dongyeop et al., 2023 --- *Everyone's Voice Matters: Quantifying Annotation Disagreement Using Demographic Information.* AAAI. DOI: <https://doi.org/10.1609/aaai.v37i12.26698>
+-   2023 --- *Everyone's Voice Matters: Quantifying Annotation Disagreement Using Demographic Information.* AAAI. DOI: <https://doi.org/10.1609/aaai.v37i12.26698>
 
 * * * * *
 
@@ -242,7 +242,7 @@ References
 ----------
 
 -   **Human-centric disagreement**\
-    Wan, R., Kim, J., & Kang, D. (2023). *Everyone's Voice Matters: Quantifying Annotation Disagreement Using Demographic Information.* AAAI.\
+    (2023). *Everyone's Voice Matters: Quantifying Annotation Disagreement Using Demographic Information.* AAAI.\
     DOI: <https://doi.org/10.1609/aaai.v37i12.26698>
 
 -   **Zero-shot NLI auditor (eval)**\
