@@ -1,250 +1,165 @@
-Disagreement-Aware RAG (Answer/Abstain)
-=======================================
+# Disagreement-Aware RAG (Answer / Abstain)
 
-This app is a retrieval-augmented QA system that **predicts disagreement risk** and **abstains** when answers are likely contentious or weakly grounded. This improves reliability at a chosen coverage (questions answered out of total asked) level. This project was created inspired by the *Everyone's Voice Matters* paper (AAAI 2023).
+Disagreement-Aware RAG is a retrieval-augmented QA system that decides **whether to answer at all**, not just what answer to generate. It retrieves evidence, generates an answer with citations, measures disagreement and evidence support, and abstains when the response is too unstable or weakly grounded.
 
-* * * * *
+**User:** developers evaluating safer grounded-QA behavior.  
+**Input:** a natural-language question and an indexed document corpus.  
+**Output:** an answer with sources or an explicit abstention, plus the risk features behind that decision.
 
-Why this matters
-----------------
+The project was inspired by *Everyone's Voice Matters: Quantifying Annotation Disagreement Using Demographic Information* (AAAI 2023).
 
-Large language models can be confident about incorrect facts.The paper states that **disagreement is signal, not noise**, this project treats "people would disagree here" as a prediction target and enforce an **answer/abstain policy**: answer when risk is low and evidence support is strong; abstain otherwise. This yields a clear **coverage--risk trade-off** that one can tune with larger datasets and for safety critical use cases.
+## Why this matters
 
--   2023 --- *Everyone's Voice Matters: Quantifying Annotation Disagreement Using Demographic Information.* AAAI. DOI: <https://doi.org/10.1609/aaai.v37i12.26698>
+A RAG system can retrieve relevant text and still produce an answer that is unstable, weakly supported or too confident. This project treats disagreement as a useful signal and turns it into an **answer/abstain policy** rather than exposing a confidence score that has no effect on behavior.
 
-* * * * *
+The decision is intentionally inspectable:
 
-What the app does
------------------
+```text
+Answer iff
+    disagreement risk < threshold
+    AND evidence overlap >= minimum
+    AND self-consistency variance <= maximum
+Otherwise abstain
+```
 
--   **Ask & Cite**: User types in a query. The system retrieves documents, synthesizes an answer with citations, computes **disagreement risk**, and either **answers** or **abstains**.
+The threshold controls the tradeoff between answering more questions and being more conservative.
 
--   **Metrics**: The UI plots **Coverage vs. Hallucination** as the abstention threshold **τ** (tau) changes. The backend also reports an ROC-AUC against an entailment-based auditor.
+## Architecture
 
-**Decision rule (simple):**
+```mermaid
+flowchart LR
+    Q[Question] --> R[BM25 + FAISS retrieval]
+    R --> G[RAG generation]
+    G --> S[k sampled answers]
+    G --> O[Evidence overlap]
+    S --> C[Self-consistency signal]
+    G --> E[Entropy proxy]
+    C --> H[Logistic disagreement head]
+    O --> H
+    E --> H
+    H --> P[Answer / abstain policy]
+    R --> P
+    P --> API[FastAPI response]
+    API --> UI[Next.js inspection UI]
+    G --> A[BART-MNLI entailment auditor]
+    A --> Eval[Offline evaluation]
+```
 
-`Answer  iff  (p_disagree < τ)  AND  (overlap ≥ min_overlap)  AND  (sc_var ≤ max_sc)
-Else → Abstain`
+## How it works
 
--   `p_disagree`: predicted probability that humans (or annotators) would disagree
+1. **Retrieve** top-k passages with BM25 and FAISS through LlamaIndex.
+2. **Generate** a primary answer plus temperature-varied resamples.
+3. **Measure** self-consistency, evidence overlap and an uncertainty proxy.
+4. **Estimate disagreement risk** with a lightweight logistic-regression head.
+5. **Apply the policy** using learned risk plus deterministic evidence/stability gates.
+6. **Audit offline** with a zero-shot NLI model against the retrieved evidence.
+7. **Inspect behavior** through the API and a Next.js interface that exposes the answer, sources, risk features and policy decision.
 
--   `overlap`: ROUGE-L--style semantic overlap between answer and retrieved evidence
+## Design evolution
 
--   `sc_var`: self-consistency variance across k re-sampled answers (higher => less stable)
+A single learned risk score is not enough to describe why a generated answer should be trusted. An answer can look low-risk to a classifier while still having weak evidence overlap or unstable resampled generations.
 
-* * * * *
+The final policy therefore does not delegate the entire decision to one model output. It combines the learned disagreement score with deterministic evidence-overlap and self-consistency gates. That makes the refusal behavior easier to inspect and tune because each rejection has a concrete reason.
 
-How it works
--------------------------
+## Design tradeoffs
 
-1.  **Retrieve** top-k passages from a small indexed corpus (BM25 + FAISS vectors via LlamaIndex).
+- **Answer/abstain over always-answer behavior:** the system gives up coverage in exchange for an explicit safety mechanism when evidence or generation stability is weak.
+- **Lightweight risk head over a larger learned verifier:** logistic regression keeps the feature contribution inspectable and cheap to retrain, while relying more heavily on feature quality.
+- **Multiple generation samples over one-shot inference:** resampling provides a useful stability signal but increases inference work.
+- **NLI auditing over using generation confidence as the label:** entailment provides an evidence-oriented check, while remaining a model-based auditor rather than a human judgment.
+- **Hybrid retrieval over a single retriever:** lexical and vector retrieval cover different query behavior, at the cost of a more involved indexing path.
 
-2.  **Generate** an answer and **k** temperature-varied re-samples (e.g., *T* ≈ 0.49, 0.60, 0.70, 0.80, 0.91) to measure **self-consistency**.
+## Validation
 
-3.  **Compute features**:
+Validation is split between model behavior and application behavior.
 
-    -   `sc_var` --- variance across the k-sampled answers
+### Offline evaluation
 
-    -   `overlap` --- ROUGE-L--like overlap between the final answer and concatenated evidence
+`app/scripts/evals.py` rebuilds the coverage/risk artifacts used by the project. The evaluation path:
 
-    -   `entropy_proxy` --- light uncertainty proxy from the answer text
+- runs questions through the retrieval and generation pipeline;
+- computes the same risk features used by the serving path;
+- applies the answer/abstain rule across configurable thresholds;
+- audits answer support with BART-MNLI;
+- writes reusable policy artifacts for inspection in the frontend.
 
-4.  **Predict disagreement risk** with a **logistic regression head** → `p_disagree`.
+### Automated tests
 
-5.  **Answer/Abstain** with the rule above → **answer** or **abstain**.
+The repository includes tests under [`app/tests/`](app/tests/) for backend behavior and supporting components. The serving API also exposes a health endpoint so the backend can be checked independently from the UI.
 
-6.  **Evaluate (offline)**: Uses a zero-shot NLI auditor (**facebook/bart-large-mnli**) to score **entailment** of the answer against the evidence. If best-entailment < threshold, count it as a hallucination.
+## Technology
 
-    -   Model card: https://huggingface.co/facebook/bart-large-mnli
+- **Backend:** FastAPI, Pydantic, scikit-learn, NumPy, Hugging Face Transformers
+- **Retrieval:** LlamaIndex, BM25, FAISS
+- **Evaluation:** BART-MNLI, Weights & Biases
+- **Frontend:** Next.js, React, Recharts
+- **Tooling:** Poetry / uv
 
-    -   BART paper: Lewis et al., 2020 --- *BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension.*
-
-* * * * *
-
-Results
----------------------------------
-
-From `scripts/evals.py` on a small test set (30 questions):
-
--   **τ = 0.55** → **coverage ≈ 96.7%** with **hallucination ≈ 3.4%**
-
--   **τ = 0.60--0.65** → **coverage ≈ 100%** with **hallucination ≈ 3.3%**
-
-The UI renders the **coverage--risk curve** directly from `data/coverage_curve.tsv`.\
-Note: ROC-AUC on the proxy labels is modest (expected on tiny, synthetic data), but the **policy curve** is stable and useful.
-
-* * * * *
-
-Tech stack
-----------
-
--   **Backend**: FastAPI, Pydantic, scikit-learn, numpy, python-dotenv, HF Transformers
-
--   **RAG**: LlamaIndex (retrieval & synthesis)
-
--   **Eval auditor and Experiment Tracking**: `facebook/bart-large-mnli` (HF Transformers), Weights and Biases
-
--   **Frontend**: Next.js (React), Recharts (Coverage--Risk plot)
-
--   **Tooling**: Poetry (or `uv`), `.env` configuration
-
-* * * * *
+## Repository map
 
 ```text
 app/
 ├── backend/
-│   ├── main.py              # FastAPI app: /qa, /metrics
-│   ├── rag.py               # index/retrieval + answer synthesis (LlamaIndex)
-│   ├── features.py          # sc_var, overlap, entropy features
-│   └── disagreement.py      # logistic head + decision rule
+│   ├── main.py
+│   ├── rag.py
+│   ├── features.py
+│   └── disagreement.py
 ├── frontend/
-│   └── app/page.tsx         # Next.js page (Ask & Cite + plot)
 ├── scripts/
-│   ├── evals.py             # builds coverage vs hallucination curve + AUC
-│   └── train_head.py        # train the logistic head
+│   ├── evals.py
+│   ├── train_head.py
+│   ├── data_ingest.py
+│   └── data_split.py
+├── tests/
 └── data/
-    ├── index/...            # cached index
-    ├── coverage_curve.tsv   # evals
-    ├── test_preds.npz       # evals (scores + labels)
-    └── disagree_head.joblib # saved head
+results/
 ```
 
-> **Run from `app/`**
+## Run locally
 
-* * * * *
+From `app/`:
 
-Setup & run
------------
-
-0) Requirements
-
--   Python 3.11
-
--   Node 20+
-
--   Poetry (or `uv`) recommended
-
-1) Backend install
-
-```
-cd app
-poetry install or uv sync
+```bash
+poetry install
+# or: uv sync
 ```
 
-2) Configure params (`app/.env`)
+Configure the policy and sampling settings in `app/.env`, then start the API:
 
-```
-HEAD_TAU=0.60            # τ (risk tolerance). Higher → answer more.
-DEC_MIN_OVERLAP=0.35     # require at least this overlap to answer
-DEC_MAX_SC=0.30          # require self-consistency variance ≤ this
-SC_SAMPLES=5             # re-samples to estimate sc_var (k)
-```
-
-Generation sampling (for sc_var)
-
-`
-RAG_TEMP=0.7
-`
-
-Evaluation (entailment auditor threshold)
-
-`
-HALLUC_THRESHOLD=0.35
-`
-
-3) Start the backend
-
-```
-# from app/
+```bash
 poetry run uvicorn backend.main:app --reload --port 8000
 ```
 
-Health check
+Start the frontend:
 
-curl http://127.0.0.1:8000/healthz
-
-4) Start the frontend
-
-```
-cd app/frontend
+```bash
+cd frontend
 npm install
 npm run dev
 ```
 
-open http://localhost:3000
+Open `http://localhost:3000`.
 
+To rebuild the offline evaluation artifacts:
 
-
-5) Reproduce the metrics plot
-
-```
-# from app/
+```bash
+cd app
 poetry run python -m scripts.evals
 ```
 
-Writes data/coverage_curve.tsv and data/test_preds.npz
-Refresh the UI to see the curve & AUC
+## Key files
 
-* * * * *
+- [FastAPI application](app/backend/main.py)
+- [Retrieval and answer generation](app/backend/rag.py)
+- [Risk features](app/backend/features.py)
+- [Disagreement model and decision rule](app/backend/disagreement.py)
+- [Offline evaluation](app/scripts/evals.py)
+- [Risk-head training](app/scripts/train_head.py)
+- [Frontend](app/frontend/)
+- [Automated tests](app/tests/)
+- [Saved project artifacts](results/)
 
-API description
------------
+## Reference
 
-### `POST /qa`
-
-**Body**
-
-`{ "query": "your question" }`
-
-**Response**
-
-`{
-  "answer": "...",
-  "sources": [{"title": "...", "text": "..."}],
-  "risk": {
-    "p_disagree": 0.42, "sc_var": 0.08, "overlap": 0.61, "entropy_proxy": 0.12
-  },
-  "decision": "answer"   // or "abstain"
-}`
-
-### `GET /metrics`
-
-`{
-  "coverage_curve": [
-    { "tau": 0.55, "coverage": 0.967, "halluc_rate": 0.034 },
-    { "tau": 0.60, "coverage": 1.000, "halluc_rate": 0.033 }
-  ],
-  "roc_auc": 0.82
-}`
-
-* * * * *
-
-Interpreting τ (risk tolerance)
--------------------------------
-
--   **Lower τ** → more conservative (answer less; abstain more; fewer mistakes).
-
--   **Higher τ** → more permissive (answer more; slightly higher risk).\
-    On this toy set, **τ ≈ 0.60** gave **~100% coverage** at **~3--4% hallucination**.
-
-* * * * *
-
-Limitations & notes
--------------------
-
--   **Data scale**: small corpus + small eval set → the ROC-AUC can be noisy. The coverage vs. hallucination curve is the main focus here.
-
--   **Proxy labels**: the head is trained against **LLM-response proxies** (self-consistency, entailment, overlap), not human-annotator disagreement labels. That was done due to a lack of human disagreement data. The **logistic regression head** is trained on a few samples of synthetic data, so it may not generalize to all domains.
-
-* * * * *
-
-References
-----------
-
--   **Human-centric disagreement**\
-    (2023). *Everyone's Voice Matters: Quantifying Annotation Disagreement Using Demographic Information.* AAAI.\
-    DOI: <https://doi.org/10.1609/aaai.v37i12.26698>
-
--   **Zero-shot NLI auditor (eval)**\
-    Lewis, M. et al. (2020). *BART: Denoising Sequence-to-Sequence Pre-training...* ACL.\
-    HF model: https://huggingface.co/facebook/bart-large-mnli
+- *Everyone's Voice Matters: Quantifying Annotation Disagreement Using Demographic Information.* AAAI 2023.
+- Lewis et al. (2020), *BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension.*
